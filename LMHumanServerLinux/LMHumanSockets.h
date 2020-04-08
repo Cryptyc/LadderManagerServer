@@ -2,32 +2,40 @@
 using namespace rapidjson;
 #include "AgentsConfig.h"
 #include <map>
+#include <vector>
+#include <thread>
+#include <future>
 
 #define SOCKET int
 
-class LMSocketConnection
+class LMSocketConnection;
+
+struct BotChecksumData
 {
-public:
-	LMSocketConnection(SOCKET InClientSocket, int InServerPort);
+	std::string BotName;
+	std::string Checksum;
+	std::string DataChecksum;
+	inline bool operator==(const BotChecksumData& Other) const
+	{
+		if (BotName == Other.BotName && Checksum == Other.Checksum)
+		{
+			return true;
+		}
+		return false;
+	}
+};
 
-	bool HandleConnection();
-
-	void RunBot(std::string BotCommandLine, BotConfig CurrentBotConfig);
-
-	bool ParseConfig(std::string ConfigFileLocation, Document& doc);
-
-	std::string getBotCommandLine(const std::string CommandLine, int gamePort, const int startPort, const std::string& opponentID) const;
-
+struct LMSocketForward
+{
 	SOCKET ClientSocket;
-
-	int ServerPort;
-
-private:
-	AgentsConfig Agents;
-
-	std::future<void> ListenServerTread;
-	std::future<void> BotRunThread;
-
+	std::thread* ClientThread;
+	LMSocketConnection* SocketConnection;
+	bool bIsAvialable = false;
+	LMSocketForward(SOCKET InClientSocket, std::thread* InClientThread, LMSocketConnection* InSocketConnection)
+		: ClientSocket(InClientSocket)
+		, ClientThread(InClientThread)
+		, SocketConnection(InSocketConnection)
+	{}
 };
 
 class LMSocketServer
@@ -36,7 +44,16 @@ public:
 	LMSocketServer();
 
 	int RunServer();
+	LMSocketConnection* GetSocketForPort(int Port);
+	void SetPortAvailble(int Port);
+	bool IsBotKnown(std::string BotName, std::string BotChecksum);
+	void AddKnownBot(std::string BotName, std::string BotChecksum, std::string DataChecksum);
+
 private:
-	std::map<int, std::thread*> PortMap;
+	std::map<int, LMSocketForward*> PortMap;
+	std::vector<std::thread*> BotThreads;
+	std::vector<BotChecksumData> KnownChecksums;
 
 };
+
+void ListenForBot(LMSocketServer* Server, int *Port);

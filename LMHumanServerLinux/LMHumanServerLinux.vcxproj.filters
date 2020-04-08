@@ -4,6 +4,8 @@
     <ClCompile Include="AgentsConfig.cpp" />
     <ClCompile Include="LMHumanSockets.cpp" />
     <ClCompile Include="ToolsUnix.cpp" />
+    <ClCompile Include="md5.cpp" />
+    <ClCompile Include="LMSocketConnection.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AgentsConfig.h" />
@@ -118,6 +120,8 @@
     <ClInclude Include="rapidjson\msinttypes\stdint.h">
       <Filter>rapidjson\msinttypes</Filter>
     </ClInclude>
+    <ClInclude Include="md5.h" />
+    <ClInclude Include="LMSocketConnection.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="rapidjson">

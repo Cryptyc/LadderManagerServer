@@ -15,9 +15,15 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cstdio>
+#include <limits.h>
+#include <dirent.h>
+#include <string.h>
+#include <fstream>
 
 #include "Tools.h"
 #include "Types.h"
+#include "md5.h"
 
 namespace {
 
@@ -45,43 +51,45 @@ int RedirectOutput(const BotConfig &Agent, int SrcFD, const char *LogFile)
 
 void StartBotProcess(const BotConfig &Agent, const std::string &CommandLine, unsigned long *ProcessId)
 {
-//	sleep(60);
-	int ret = chdir(Agent.RootPath.c_str());
-	if (ret < 0) 
+	pid_t pID = fork();
+
+	if (pID < 0)
 	{
-		std::cerr << Agent.BotName + ": Can't change working directory to " + Agent.RootPath << ", error: " << errno << std::endl;
-		//            exit(errno);
+		std::cerr << Agent.BotName + ": Can't fork the bot process, error: " << errno << std::endl;
+		return;
 	}
 
-//	RedirectOutput(Agent, STDERR_FILENO, "data/stderr.log");
-	//            exit(errno);
+	if (pID == 0) // child
+	{
+		// Move child to a new process group so that it can not kill the ladderManager
+		setpgid(0, 0);
 
-//	if (Agent.Debug)
-//	{
-//		RedirectOutput(Agent, STDOUT_FILENO, "data/stdout.log");
-	//                exit(errno);
-//	}
-//	else
-//	{
-//		close(STDOUT_FILENO);
-//	}
+		//	sleep(60);
+		int ret = chdir(Agent.RootPath.c_str());
+		if (ret < 0)
+		{
+			std::cerr << Agent.BotName + ": Can't change working directory to " + Agent.RootPath << ", error: " << errno << std::endl;
+			//            exit(errno);
+		}
 
-	close(STDIN_FILENO);
+		//	RedirectOutput(Agent, STDERR_FILENO, "data/stderr.log");
+			//            exit(errno);
 
-	system(CommandLine.c_str());
+		//	if (Agent.Debug)
+		//	{
+		//		RedirectOutput(Agent, STDOUT_FILENO, "data/stdout.log");
+			//                exit(errno);
+		//	}
+		//	else
+		//	{
+		//		close(STDOUT_FILENO);
+		//	}
+
+		close(STDIN_FILENO);
+
+		system(CommandLine.c_str());
+	}
 	/*
-    pid_t pID = fork();
-
-    if (pID < 0)
-    {
-        std::cerr << Agent.BotName + ": Can't fork the bot process, error: " << errno << std::endl;
-        return;
-    }
-
-    if (pID == 0) // child
-    {
-        // Move child to a new process group so that it can not kill the ladderManager
-        setpgid(0, 0); 
         int ret = chdir(Agent.RootPath.c_str());
         if (ret < 0) {
             std::cerr << Agent.BotName +
@@ -152,6 +160,7 @@ void StartBotProcess(const BotConfig &Agent, const std::string &CommandLine, uns
     }
 
     // parent
+	*/
     *ProcessId = pID;
 
     int exit_status = 0;
@@ -160,7 +169,6 @@ void StartBotProcess(const BotConfig &Agent, const std::string &CommandLine, uns
         std::cerr << Agent.BotName +
             ": Can't wait for the child process, error:" << errno << std::endl;
     }
-	*/
 }
 
 void StartExternalProcess(const std::string &CommandLine)
@@ -221,6 +229,7 @@ std::string PerformRestRequest(const std::string &location, const std::vector<st
 		command = command + NextArgument;
 	}
 	command = command + " " + location;
+	std::cout << command << std::endl;
 	std::shared_ptr<FILE> pipe(popen(command.c_str(), "r"), pclose);
 	if (!pipe) throw std::runtime_error("popen() failed!");
 	while (!feof(pipe.get())) {
@@ -237,12 +246,36 @@ bool ZipArchive(const std::string &InDirectory, const std::string &OutArchive)
 
 bool UnzipArchive(const std::string &InArchive, const std::string &OutDirectory)
 {
-	return false;
+	std::string Command = "unzip " + InArchive + " -d " + OutDirectory;
+	std::cout << "Unzipping: " << Command << std::endl;
+	system(Command.c_str());
 }
 
-std::string GenerateMD5(std::string filename)
+std::string GenerateMD5(const std::string filename)
 {
+	std::ifstream InFile;
+	InFile.open(filename.c_str(), std::ios::binary | std::ios::in);
+	if (!InFile.is_open())
+	{
+		std::cout << "GenerateMD5: Unable to open file: " << filename << std::endl;
 
+	}
+	//Find length of file
+	InFile.seekg(0, std::ios::end);
+	long Length = InFile.tellg();
+	InFile.seekg(0, std::ios::beg);
+
+	//read in the data from your file
+	char* InFileData = new char[Length];
+	InFile.read(InFileData, Length);
+
+	//Calculate MD5 hash
+	std::string Temp = md5(InFileData, Length);
+
+	//Clean up
+	delete[] InFileData;
+
+	return Temp;
 }
 
 bool MakeDirectory(const std::string& directory_name)
@@ -254,6 +287,34 @@ bool CheckExists(const std::string& name)
 {
 	struct stat buffer;
 	return (stat(name.c_str(), &buffer) == 0);
+}
+
+void RemoveDirectoryRecursive(std::string Path)
+{
+	DIR* dir;
+	struct dirent* entry;
+	char CurrentPath[PATH_MAX];
+
+	dir = opendir(Path.c_str());
+	if (dir == NULL) {
+		perror("Error opendir()");
+		return;
+	}
+
+	while ((entry = readdir(dir)) != NULL)
+	{
+		if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) 
+		{
+			snprintf(CurrentPath, (size_t)PATH_MAX, "%s/%s", Path.c_str(), entry->d_name);
+			if (entry->d_type == DT_DIR)
+			{
+				RemoveDirectoryRecursive(CurrentPath);
+			}
+			remove(CurrentPath);
+		}
+	}
+	closedir(dir);
+	remove(Path.c_str());
 }
 
 #endif

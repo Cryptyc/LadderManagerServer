@@ -16,6 +16,8 @@
 #include <sys/un.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
+#include <fcntl.h>
 
 #define RAPIDJSON_HAS_STDSTRING 1
 
@@ -25,16 +27,17 @@
 #include "rapidjson/stringbuffer.h"
 
 #include "LMHumanSockets.h"
+#include "LMSocketConnection.h"
 #include "Tools.h"
 #include "Types.h"
 
 #define DEFAULT_BUFLEN 8192
-#define DEFAULT_PORT "27015"
-//#define BOT_DIR "/home/crysison/Bots/"
-#define BOT_DIR "/home/crypt/Bots/"
-#define PORT_START 2903
-#define PORT_END 2906
+#define DEFAULT_PORT "26910"
 
+
+#define PORT_START 2903
+#define PORT_END 2913
+#define CONN_TIMEOUT 300
 
 #define ZeroMemory(Destination,Length) memset((Destination),0,(Length))
 #define min(a,b)            (((a) < (b)) ? (a) : (b))
@@ -43,6 +46,22 @@
 
 static int conn_count = 0;
 using namespace rapidjson;
+
+/** Returns true on success, or false if there was an error */
+bool SetSocketBlockingEnabled(int fd, bool blocking)
+{
+	if (fd < 0) return false;
+
+#ifdef _WIN32
+	unsigned long mode = blocking ? 0 : 1;
+	return (ioctlsocket(fd, FIONBIO, &mode) == 0) ? true : false;
+#else
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1) return false;
+	flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+	return (fcntl(fd, F_SETFL, flags) == 0) ? true : false;
+#endif
+}
 
 static void ProcessClient(void* lpParameter)
 {
@@ -60,6 +79,8 @@ static void ShipData(const char* source, SOCKET ClientSocket, SOCKET ServerSocke
 	ssize_t iResult;
 	int recvbuflen = DEFAULT_BUFLEN;
 	bool bShouldExit = false;
+	clock_t last_call = clock();
+
 	while (!bShouldExit)
 	{
 		ZeroMemory(recvbuf, recvbuflen);
@@ -69,10 +90,19 @@ static void ShipData(const char* source, SOCKET ClientSocket, SOCKET ServerSocke
 		if (iResult < 0)
 		{
 			int result = errno;
-			if (result != EWOULDBLOCK)
+			if (result == EWOULDBLOCK)
+			{
+				double secs_since_last = double(clock() - last_call) / CLOCKS_PER_SEC;
+				if (secs_since_last > CONN_TIMEOUT)
+				{
+					printf("%s Socket connection timeout: %d\r\n", source, secs_since_last);
+					bShouldExit = true;
+				}
+			}
+			else
 			{
 				printf("%s recv failed with error: %d\r\n", source, result);
-				return;
+				bShouldExit = true;
 			}
 		}
 
@@ -84,12 +114,14 @@ static void ShipData(const char* source, SOCKET ClientSocket, SOCKET ServerSocke
 
 		else
 		{
-			if (conn_count > 0)
+/*			if (conn_count > 0)
 			{
 				printf("%s Recieved %d bytes\r\n", source, iResult);
 				printf("\r\n\r\n%s\r\n\r\n", recvbuf);
 				conn_count --;
 			}
+			*/
+			last_call = clock();
 			char* tmp_data = recvbuf;
 			ssize_t data_remaining = iResult;
 
@@ -142,70 +174,6 @@ static void ShipData(const char* source, SOCKET ClientSocket, SOCKET ServerSocke
 	free(recvbuf);
 }
 
-static std::string GetBotStartCommand(BotType Type, std::string FileName, std::string args)
-{
-	std::string OutCmdLine = "";
-	switch (Type)
-	{
-	case Python:
-	{
-		OutCmdLine = "python " + FileName;
-		break;
-	}
-	case Wine:
-	{
-		OutCmdLine = "wine " + FileName;
-		break;
-	}
-	case Mono:
-	{
-		OutCmdLine = "mono " + FileName;
-		break;
-	}
-	case DotNetCore:
-	{
-		OutCmdLine = "dotnet " + FileName;
-		break;
-	}
-	case BinaryCpp:
-	{
-		OutCmdLine = FileName;
-		break;
-	}
-	case Java:
-	{
-		OutCmdLine = "java -jar " + FileName;
-		break;
-	}
-	case CommandCenter:
-	case NodeJS:
-		break;
-	}
-
-	OutCmdLine += " " + args;
-	return OutCmdLine;
-}
-
-void SendClientResponse(SOCKET AcceptSocket, bool Success, const char* Error)
-{
-	Document ResponseDoc;
-	ResponseDoc.SetObject();
-	rapidjson::Document::AllocatorType& allocator = ResponseDoc.GetAllocator();
-	if (!Success)
-	{
-		ResponseDoc.AddMember(rapidjson::Value("Error", allocator).Move(), rapidjson::Value(Error, allocator).Move(), allocator);
-	}
-	else
-	{
-		ResponseDoc.AddMember(rapidjson::Value("Success", allocator).Move(), rapidjson::Value(Error, allocator).Move(), allocator);
-	}
-	StringBuffer buffer;
-	Writer<StringBuffer> writer(buffer);
-	ResponseDoc.Accept(writer);
-	send(AcceptSocket, buffer.GetString(), buffer.GetLength(), 0);
-}
-
-
 int main(int argc, char** argv)
 {
 	LMSocketServer* Server = new LMSocketServer();
@@ -218,6 +186,8 @@ LMSocketServer::LMSocketServer()
 	for (int i = PORT_START; i < PORT_END; i++)
 	{
 		PortMap[i] = nullptr;
+		int* imem = new int(i);
+		BotThreads.push_back(new std::thread(&ListenForBot, this, imem));
 	}
 }
 
@@ -290,19 +260,18 @@ int LMSocketServer::RunServer()
 				NewServerPort = it->first;
 				break;
 			}
-			/*
-			if (it->second->joinable())
+			else if (it->second->bIsAvialable)
 			{
-				it->second = nullptr;
+				it->second->bIsAvialable = false;
 				NewServerPort = it->first;
 				break;
 			}
-			*/
 		}
 		if (NewServerPort > 0)
 		{
-			LMSocketConnection* NewConnection = new LMSocketConnection(ClientSocket, NewServerPort);
-			PortMap[NewServerPort] = new std::thread(&ProcessClient, (void*)NewConnection);
+			delete(PortMap[NewServerPort]);
+			LMSocketConnection* NewConnection = new LMSocketConnection(ClientSocket, NewServerPort, this);
+			PortMap[NewServerPort] = new LMSocketForward (ClientSocket, new std::thread(&ProcessClient, (void*)NewConnection), NewConnection);
 		}
 		else
 		{
@@ -325,84 +294,39 @@ int LMSocketServer::RunServer()
 	return 0;
 }
 
-LMSocketConnection::LMSocketConnection(SOCKET InClientSocket, int InServerPort)
-	: ClientSocket(InClientSocket)
-	, ServerPort(InServerPort)
+void LMSocketServer::SetPortAvailble(int Port)
 {
-
+	if (PortMap[Port] != nullptr)
+	{
+		PortMap[Port]->bIsAvialable = true;
+	}
 }
 
-bool LMSocketConnection::HandleConnection()
+bool LMSocketServer::IsBotKnown(std::string BotName, std::string BotChecksum)
 {
-
-	// Send and receive data.
-	char* recvbuf = (char*)malloc(DEFAULT_BUFLEN);
-	if (recvbuf == nullptr)
+	BotChecksumData NewChecksum;
+	NewChecksum.BotName = BotName;
+	NewChecksum.Checksum = BotChecksum;
+	for (const BotChecksumData& CurrentChecksum : KnownChecksums)
 	{
-		printf("unable to allocate memory");
-		return false;
+		if (CurrentChecksum == NewChecksum)
+		{
+			return true;
+		}
 	}
-
-	bool bShouldExit = false;
-	while (!bShouldExit)
-	{
-		ZeroMemory(recvbuf, DEFAULT_BUFLEN);
-
-		recv(ClientSocket, recvbuf, DEFAULT_BUFLEN, 0);
-		std::cout << "Client said: " << recvbuf << std::endl;
-		Document RequestDoc;
-		if (RequestDoc.Parse(recvbuf).HasParseError())
-		{
-			SendClientResponse(ClientSocket, false, "Invalid Json Document\r\n");
-			bShouldExit = true;
-			break;
-		}
-
-		if (!RequestDoc["BotName"].IsString())
-		{
-			SendClientResponse(ClientSocket, false, "Bot Name not found\r\n");
-			bShouldExit = true;
-			break;
-		}
-
-		if (!RequestDoc["StartPort"].IsString())
-		{
-			SendClientResponse(ClientSocket, false, "Start port not found\r\n");
-			bShouldExit = true;
-			break;
-		}
-
-		std::string  BotConfigLocation;
-		std::string BotRootLocation = BOT_DIR;
-		BotRootLocation += RequestDoc["BotName"].GetString();
-		BotConfigLocation = BotRootLocation + "/ladderbots.json";
-		if (!CheckExists(BotConfigLocation))
-		{
-			SendClientResponse(ClientSocket, false, "Bot not on server\r\n");
-			bShouldExit = true;
-			break;
-		}
-
-		Agents.LoadAgents(BotRootLocation, BotConfigLocation);
-		BotConfig CurrentBotConfig;
-		if (!Agents.FindBot(RequestDoc["BotName"].GetString(), CurrentBotConfig))
-		{
-			SendClientResponse(ClientSocket, false, "Invalid bot config\r\n");
-			bShouldExit = true;
-			break;
-		}
-		int StartPort = atoi(RequestDoc["StartPort"].GetString());
-		SendClientResponse(ClientSocket, true, "Success");
-		CurrentBotConfig.executeCommand = GetBotStartCommand(CurrentBotConfig.Type, CurrentBotConfig.FileName, "");
-		std::string BotCommandLine = getBotCommandLine(CurrentBotConfig.executeCommand, ServerPort, StartPort, "HUMAN");
-		RunBot(BotCommandLine, CurrentBotConfig);
-
-	}
-	free(recvbuf);
-	return true;
+	return false;
 }
 
-void ListenForBot(LMSocketConnection* ServerSocket)
+void LMSocketServer::AddKnownBot(std::string BotName, std::string BotChecksum, std::string DataChecksum)
+{
+	BotChecksumData NewChecksum;
+	NewChecksum.BotName = BotName;
+	NewChecksum.Checksum = BotChecksum;
+	NewChecksum.DataChecksum = DataChecksum;
+	KnownChecksums.push_back(NewChecksum);
+}
+
+void ListenForBot(LMSocketServer *Server, int *Port)
 {
 	int iResult;
 
@@ -419,12 +343,11 @@ void ListenForBot(LMSocketConnection* ServerSocket)
 	hints.ai_flags = AI_PASSIVE;
 
 	// Resolve the server address and port
-	iResult = getaddrinfo(NULL, std::to_string(ServerSocket->ServerPort).c_str(), &hints, &result);
+	iResult = getaddrinfo(NULL, std::to_string(*Port).c_str(), &hints, &result);
 	if (iResult != 0) {
 		printf("getaddrinfo failed with error: %d\n", iResult);
 		return;
 	}
-
 	// Create a SOCKET for connecting to server
 	ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
 	if (ListenSocket == INVALID_SOCKET) {
@@ -458,42 +381,58 @@ void ListenForBot(LMSocketConnection* ServerSocket)
 		close(ListenSocket);
 		return;
 	}
-	printf("listeing on port: %d\n", ServerSocket->ServerPort);
+	printf("listeing on port: %d\n", *Port);
 
-	ClientSocket = SOCKET_ERROR;
 
-	while (ClientSocket == SOCKET_ERROR)
+	bool bShouldExit = false;
+	while (!bShouldExit)
 	{
-		ClientSocket = accept(ListenSocket, NULL, NULL);
+		ClientSocket = SOCKET_ERROR;
+		while (ClientSocket == SOCKET_ERROR)
+		{
+			ClientSocket = accept(ListenSocket, NULL, NULL);
+		}
+		LMSocketConnection* BotSocket = Server->GetSocketForPort(*Port);
+		if (BotSocket == nullptr || BotSocket->ClientSocket == INVALID_SOCKET)
+		{
+			printf("Unscheduled connection on port %d", *Port);
+			close(ClientSocket);
+			return;
+		}
+
+		printf("Bot Client Connected.\n");
+		SetSocketBlockingEnabled(BotSocket->ClientSocket, false);
+		SetSocketBlockingEnabled(ClientSocket, false);
+		std::mutex CritLock;
+		//	conn_count = 6;
+		std::thread ClientThread(&ShipData, "CLIENT", ClientSocket, BotSocket->ClientSocket, &CritLock);
+		std::thread Sc2Thread(&ShipData, "BOT", BotSocket->ClientSocket, ClientSocket, &CritLock);
+
+		ClientThread.join();
+		Sc2Thread.join();
+
+		BotSocket->KillBotProcess();
+
+		// shutdown the connection since we're done
+	//	iResult = shutdown(ClientSocket, SHUT_WR);
+	//	if (iResult == SOCKET_ERROR) {
+	//		printf("shutdown failed with error: %d\n", errno);
+	//		close(ClientSocket);
+	//		return;
+	//	}
+		// cleanup
+		close(ClientSocket);
+
+		//	iResult = shutdown(ListenSocket, SHUT_WR);
+		//	if (iResult == SOCKET_ERROR) {
+		//		printf("shutdown failed with error: %d\n", errno);
+		//		close(ListenSocket);
+		//		return;
+		// 	}
+		Server->SetPortAvailble(*Port);
+		printf("Bot update thread exiting on port %d\n", *Port);
 	}
-
-	printf("Bot Client Connected.\n");
-
-	std::mutex CritLock;
-	conn_count = 6;
-	std::thread ClientThread(&ShipData, "CLIENT", ClientSocket, ServerSocket->ClientSocket, &CritLock);
-	std::thread Sc2Thread(&ShipData, "BOT", ServerSocket->ClientSocket, ClientSocket, &CritLock);
-
-	ClientThread.join();
-	Sc2Thread.join();
-
-
-	// shutdown the connection since we're done
-//	iResult = shutdown(ClientSocket, SHUT_WR);
-//	if (iResult == SOCKET_ERROR) {
-//		printf("shutdown failed with error: %d\n", errno);
-//		close(ClientSocket);
-//		return;
-//	}
-	// cleanup
-	close(ClientSocket);
-
-//	iResult = shutdown(ListenSocket, SHUT_WR);
-//	if (iResult == SOCKET_ERROR) {
-//		printf("shutdown failed with error: %d\n", errno);
-//		close(ListenSocket);
-//		return;
-// 	}
+	printf("Exiting for client socket on port %d\n", *Port);
 	close(ListenSocket);
 	return;
 }
@@ -501,9 +440,7 @@ void ListenForBot(LMSocketConnection* ServerSocket)
 
 void LMSocketConnection::RunBot(std::string BotCommandLine, BotConfig CurrentBotConfig)
 {
-	unsigned long ProcessId;
-	ListenServerTread = std::async(std::launch::async, &ListenForBot, this);
-	sleep(1);
+
 	printf("Starting bot with command line: %s", BotCommandLine.c_str());
 	BotRunThread = std::async(std::launch::async, &StartBotProcess, CurrentBotConfig, BotCommandLine, &ProcessId);
 	bool bShouldExit = false;

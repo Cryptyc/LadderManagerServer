@@ -77,11 +77,15 @@
   <ItemGroup>
     <ClCompile Include="AgentsConfig.cpp" />
     <ClCompile Include="LMHumanSockets.cpp" />
+    <ClCompile Include="LMSocketConnection.cpp" />
+    <ClCompile Include="md5.cpp" />
     <ClCompile Include="ToolsUnix.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AgentsConfig.h" />
     <ClInclude Include="LMHumanSockets.h" />
+    <ClInclude Include="LMSocketConnection.h" />
+    <ClInclude Include="md5.h" />
     <ClInclude Include="rapidjson\allocators.h" />
     <ClInclude Include="rapidjson\cursorstreamwrapper.h" />
     <ClInclude Include="rapidjson\document.h" />
@@ -124,6 +128,12 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Link>
       <AdditionalOptions>-lstdc++fs -std=c++17  -pthread %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Link>
+      <AdditionalDependencies>$(StlAdditionalDependencies);%(Link.AdditionalDependencies); </AdditionalDependencies>
+      <LibraryDependencies>pthread</LibraryDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <string>
 #include "Types.h"
 
 
@@ -21,13 +22,9 @@ bool ZipArchive(const std::string &InDirectory, const std::string &OutArchive);
 
 bool UnzipArchive(const std::string &InArchive, const std::string &OutDirectory);
 
-std::string NormalisePath(std::string Path);
-
 void RemoveDirectoryRecursive(std::string Path);
 
 std::string GenerateMD5(std::string filename);
-
-bool isMapAvailable(const std::string& map_name, const std::string& sc2Path);
 
 bool MakeDirectory(const std::string& directory_name);
 
